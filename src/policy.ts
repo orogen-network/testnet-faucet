@@ -1,7 +1,7 @@
 /**
  * Faucet sybil-resistance policy.
  *
- * Rules per plan §1.7:
+ * Rules:
  *   - Per-drip cap: configurable; default 10 tFORGE per /drip call.
  *   - Cap per attested operator: configurable; default 1000 tFORGE/day.
  *   - Cap per /24 IP block: 1 drip every 30 min.
