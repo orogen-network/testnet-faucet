@@ -7,6 +7,7 @@ import {
   deriveSourceIp24Hash,
   freshState,
 } from "../src/policy.js";
+import { buildApp } from "../src/server.js";
 
 const sampleReq = (over: Partial<ServerSidePolicyInputs> = {}): ServerSidePolicyInputs => ({
   recipient: over.recipient ?? "5DfhG1",
@@ -89,5 +90,24 @@ describe("deriveSourceIp24Hash", () => {
 
   it("returns deterministic hex digest", () => {
     expect(deriveSourceIp24Hash("1.2.3.4")).toMatch(/^[0-9a-f]{64}$/);
+  });
+});
+
+describe("production app configuration", () => {
+  it("requires attestation-service URL in production", async () => {
+    const oldEnv = process.env.OROGEN_ENV;
+    const oldUrl = process.env.ATTESTATION_SERVICE_URL;
+    process.env.OROGEN_ENV = "production";
+    delete process.env.ATTESTATION_SERVICE_URL;
+    try {
+      expect(() => buildApp({ apiTokens: new Set(["token"]) })).toThrow(
+        /ATTESTATION_SERVICE_URL/,
+      );
+    } finally {
+      if (oldEnv === undefined) delete process.env.OROGEN_ENV;
+      else process.env.OROGEN_ENV = oldEnv;
+      if (oldUrl === undefined) delete process.env.ATTESTATION_SERVICE_URL;
+      else process.env.ATTESTATION_SERVICE_URL = oldUrl;
+    }
   });
 });

@@ -58,6 +58,11 @@ export function buildApp(opts: BuildOpts = {}) {
     opts.attestationServiceUrl ?? process.env.ATTESTATION_SERVICE_URL ?? "";
   const attestationToken =
     opts.attestationServiceToken ?? process.env.ATTESTATION_SERVICE_TOKEN ?? "";
+  if (isProd && !attestationUrl) {
+    throw new Error(
+      "ATTESTATION_SERVICE_URL must be set in production so attestation_report_id is resolved server-side",
+    );
+  }
 
   const trustProxy =
     opts.trustProxy ??
@@ -148,9 +153,9 @@ export function buildApp(opts: BuildOpts = {}) {
         return { ok: false, reason: `attestation lookup failed: ${(err as Error).message}` };
       }
     } else {
-      // Dev/test fall-through: trust the supplied id directly. Tests inject
-      // a mock attestationServiceUrl when they want to exercise the resolve
-      // path.
+      // Dev/test fall-through only. Production refuses to start without
+      // ATTESTATION_SERVICE_URL, so public deployments never trust the
+      // client-supplied attestation_report_id as a rate-limit key.
       attestation_report_hash = attestation_report_id;
     }
 
