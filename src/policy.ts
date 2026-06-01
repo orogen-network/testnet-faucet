@@ -25,12 +25,30 @@ export const DripRequest = z.object({
 });
 export type DripRequest = z.infer<typeof DripRequest>;
 
+/**
+ * Public no-attestation bootstrap lane. A stranger supplies only a recipient
+ * address and receives a small fixed amount so they can post operator stake.
+ * The amount is server-fixed (PUBLIC_DRIP_OROG); the client cannot request it.
+ */
+export const PublicDripRequest = z.object({
+  recipient: z.string().min(1).max(128),
+});
+export type PublicDripRequest = z.infer<typeof PublicDripRequest>;
+
 export interface PolicyState {
   byRecipient: Map<string, { last_ms: number; total_today: number }>;
   bySourceIp24: Map<string, number>;
   byAttestation: Map<string, number>;
   totalToday: number;
   dayStartedAtMs: number;
+}
+
+export interface FaucetLimits {
+  per_drip_cap: number;
+  per_recipient_per_day: number;
+  per_source_ip_24_min_interval_ms: number;
+  per_attestation_min_interval_ms: number;
+  daily_total: number;
 }
 
 export const DEFAULT_LIMITS = {
@@ -41,7 +59,27 @@ export const DEFAULT_LIMITS = {
   daily_total: 100_000,
 } as const;
 
-export type Limits = typeof DEFAULT_LIMITS;
+export type Limits = FaucetLimits;
+
+/**
+ * Fixed amount (whole OROG) handed out by the public no-attestation bootstrap
+ * lane. Configurable via PUBLIC_DRIP_OROG; defaults to enough to comfortably
+ * cover the 1 OROG operator MinStake plus fees.
+ */
+export const PUBLIC_DRIP_OROG = Number(process.env.PUBLIC_DRIP_OROG ?? 5);
+
+/**
+ * Limits for the public bootstrap lane. The per-attestation axis is disabled
+ * (interval 0) because the public lane carries no attestation; sybil pressure
+ * is held by the per-recipient cap and the 6h per-/24 interval.
+ */
+export const PUBLIC_LIMITS: FaucetLimits = {
+  per_drip_cap: PUBLIC_DRIP_OROG,
+  per_recipient_per_day: PUBLIC_DRIP_OROG,
+  per_source_ip_24_min_interval_ms: 6 * 60 * 60 * 1000,
+  per_attestation_min_interval_ms: 0,
+  daily_total: 10_000,
+};
 
 export function freshState(now_ms: number): PolicyState {
   return {
@@ -89,7 +127,7 @@ export function checkAndRecord(
   state: PolicyState,
   req: ServerSidePolicyInputs,
   now_ms: number,
-  limits: Limits = DEFAULT_LIMITS,
+  limits: FaucetLimits = DEFAULT_LIMITS,
 ): { ok: true } | { ok: false; reason: string } {
   if (now_ms - state.dayStartedAtMs > 24 * 60 * 60 * 1000) {
     Object.assign(state, freshState(now_ms));

@@ -15,8 +15,17 @@
 import Fastify from "fastify";
 
 import {
+  PolkadotFaucetClient,
+  MockFaucetChainClient,
+  orogToPlanck,
+} from "./chain.js";
+import type { FaucetChainClient } from "./chain.js";
+import {
   DEFAULT_LIMITS,
+  PUBLIC_DRIP_OROG,
+  PUBLIC_LIMITS,
   DripRequest,
+  PublicDripRequest,
   checkAndRecord,
   deriveSourceIp24Hash,
   freshState,
@@ -34,6 +43,8 @@ interface BuildOpts {
   /** Per-IP rate limit window. */
   rateLimitMax?: number;
   rateLimitWindowMs?: number;
+  /** On-chain transfer client. Tests inject a mock; otherwise derived from env. */
+  chainClient?: FaucetChainClient;
 }
 
 function envCsv(name: string): Set<string> {
@@ -64,6 +75,20 @@ export function buildApp(opts: BuildOpts = {}) {
     );
   }
 
+  const rpcUrl = process.env.OROGEN_RPC_URL ?? "wss://forge-rpc.orogen.network";
+  const mnemonic = process.env.FAUCET_SIGNER_MNEMONIC ?? "";
+  // In production a real signer is mandatory — without it the faucet cannot
+  // move tokens. Placed AFTER the attestation-URL check so the existing
+  // production-config test still trips on ATTESTATION_SERVICE_URL first.
+  if (isProd && !mnemonic && !opts.chainClient) {
+    throw new Error(
+      "FAUCET_SIGNER_MNEMONIC must be set in production so the faucet can transfer OROG on-chain",
+    );
+  }
+  const chainClient: FaucetChainClient =
+    opts.chainClient ??
+    (mnemonic ? new PolkadotFaucetClient(rpcUrl, mnemonic) : new MockFaucetChainClient());
+
   const trustProxy =
     opts.trustProxy ??
     (process.env.TRUSTED_PROXIES
@@ -73,6 +98,9 @@ export function buildApp(opts: BuildOpts = {}) {
   const app = Fastify({ logger: true, trustProxy });
 
   const state = freshState(Date.now());
+  // Separate ledger for the public bootstrap lane so its small fixed drips
+  // don't share caps with the attested /drip lane.
+  const publicState = freshState(Date.now());
 
   // Naive in-process rate limit (LOW-SVC-018 / MED-SVC-012-style hardening).
   // For production use @fastify/rate-limit; this is sufficient for the
@@ -83,8 +111,11 @@ export function buildApp(opts: BuildOpts = {}) {
 
   app.addHook("onRequest", async (req, reply) => {
     if (req.url === "/healthz") return;
+    // The public bootstrap lane is intentionally unauthenticated; it is still
+    // subject to per-IP rate limiting below.
+    const isPublicLane = req.url === "/drip-public";
     // 1) bearer-auth
-    if (apiTokens.size > 0) {
+    if (!isPublicLane && apiTokens.size > 0) {
       const hdr = req.headers["authorization"] ?? "";
       const match = typeof hdr === "string" ? hdr.match(/^Bearer (.+)$/i) : null;
       const tok = match?.[1];
@@ -171,7 +202,55 @@ export function buildApp(opts: BuildOpts = {}) {
       reply.code(429);
       return result;
     }
-    return { ok: true, recipient, amount };
+
+    try {
+      const { txHash } = await chainClient.transfer(recipient, orogToPlanck(amount));
+      return { ok: true, recipient, amount, tx_hash: txHash };
+    } catch (err) {
+      reply.code(503);
+      return { ok: false, reason: `transfer failed: ${(err as Error).message}` };
+    }
+  });
+
+  // Public no-attestation bootstrap lane: a stranger supplies only a recipient
+  // address and receives a small fixed amount (PUBLIC_DRIP_OROG) so they can
+  // post the operator MinStake. No bearer; per-IP rate limiting still applies.
+  app.post("/drip-public", async (req, reply) => {
+    const parsed = PublicDripRequest.safeParse(req.body);
+    if (!parsed.success) {
+      reply.code(400);
+      return { ok: false, reason: "bad request", errors: parsed.error.flatten() };
+    }
+    const { recipient } = parsed.data;
+    const amount = PUBLIC_DRIP_OROG;
+
+    const source_ip_24_hash = deriveSourceIp24Hash(req.ip ?? "0.0.0.0");
+
+    const result = checkAndRecord(
+      publicState,
+      {
+        recipient,
+        amount,
+        // The public lane carries no attestation; that axis is disabled
+        // (interval 0) in PUBLIC_LIMITS, so a fixed sentinel key is fine.
+        attestation_report_hash: "public",
+        source_ip_24_hash,
+      },
+      Date.now(),
+      PUBLIC_LIMITS,
+    );
+    if (!result.ok) {
+      reply.code(429);
+      return result;
+    }
+
+    try {
+      const { txHash } = await chainClient.transfer(recipient, orogToPlanck(amount));
+      return { ok: true, recipient, amount, tx_hash: txHash };
+    } catch (err) {
+      reply.code(503);
+      return { ok: false, reason: `transfer failed: ${(err as Error).message}` };
+    }
   });
 
   app.get("/healthz", async () => ({ ok: true }));
