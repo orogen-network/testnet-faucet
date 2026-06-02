@@ -97,6 +97,38 @@ export function buildApp(opts: BuildOpts = {}) {
 
   const app = Fastify({ logger: true, trustProxy });
 
+  // Browser CORS for the public bootstrap lane. Kept tight: only the known
+  // Orogen frontends, only the methods/headers /drip-public actually needs.
+  // Never "*". Overridable via FAUCET_CORS_ORIGINS (csv).
+  const corsOrigins =
+    process.env.FAUCET_CORS_ORIGINS
+      ? new Set(
+          process.env.FAUCET_CORS_ORIGINS.split(",")
+            .map((s) => s.trim())
+            .filter(Boolean),
+        )
+      : new Set([
+          "https://onboarding.orogen.network",
+          "https://app.orogen.network",
+          "https://orogen.network",
+        ]);
+
+  app.addHook("onRequest", async (req, reply) => {
+    const origin = req.headers["origin"];
+    if (typeof origin === "string" && corsOrigins.has(origin)) {
+      reply.header("access-control-allow-origin", origin);
+      reply.header("vary", "Origin");
+      reply.header("access-control-allow-methods", "POST, OPTIONS");
+      reply.header("access-control-allow-headers", "content-type");
+      reply.header("access-control-max-age", "600");
+    }
+    // Answer the CORS preflight before auth/rate-limit hooks run.
+    if (req.method === "OPTIONS") {
+      reply.code(204);
+      return reply.send();
+    }
+  });
+
   const state = freshState(Date.now());
   // Separate ledger for the public bootstrap lane so its small fixed drips
   // don't share caps with the attested /drip lane.

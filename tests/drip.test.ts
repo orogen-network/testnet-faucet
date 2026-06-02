@@ -77,6 +77,68 @@ describe("POST /drip", () => {
   });
 });
 
+describe("CORS for /drip-public", () => {
+  it("answers the preflight for an allowed origin", async () => {
+    const mock = new MockFaucetChainClient();
+    const app = buildApp({ chainClient: mock, apiTokens: new Set(["t0k3n"]) });
+
+    const res = await app.inject({
+      method: "OPTIONS",
+      url: "/drip-public",
+      headers: {
+        origin: "https://onboarding.orogen.network",
+        "access-control-request-method": "POST",
+        "access-control-request-headers": "content-type",
+      },
+    });
+
+    expect(res.statusCode).toBe(204);
+    expect(res.headers["access-control-allow-origin"]).toBe(
+      "https://onboarding.orogen.network",
+    );
+    expect(res.headers["access-control-allow-methods"]).toMatch(/POST/);
+    expect(res.headers["access-control-allow-headers"]).toMatch(/content-type/);
+    expect(mock.sent).toHaveLength(0);
+
+    await app.close();
+  });
+
+  it("echoes the allow-origin header on the actual POST", async () => {
+    const mock = new MockFaucetChainClient();
+    const app = buildApp({ chainClient: mock, apiTokens: new Set(["t0k3n"]) });
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/drip-public",
+      headers: { origin: "https://onboarding.orogen.network" },
+      payload: { recipient: "5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY" },
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.headers["access-control-allow-origin"]).toBe(
+      "https://onboarding.orogen.network",
+    );
+
+    await app.close();
+  });
+
+  it("does not echo allow-origin for an unknown origin", async () => {
+    const mock = new MockFaucetChainClient();
+    const app = buildApp({ chainClient: mock, apiTokens: new Set(["t0k3n"]) });
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/drip-public",
+      headers: { origin: "https://evil.example.com" },
+      payload: { recipient: "5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY" },
+    });
+
+    expect(res.headers["access-control-allow-origin"]).toBeUndefined();
+
+    await app.close();
+  });
+});
+
 describe("POST /drip-public", () => {
   it("drips a fixed amount with no bearer and returns tx_hash", async () => {
     const mock = new MockFaucetChainClient();
